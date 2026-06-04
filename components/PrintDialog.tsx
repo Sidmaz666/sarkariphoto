@@ -30,9 +30,11 @@ import {
 import { toast } from "sonner"
 import {
   PAPER_SIZES,
-  calculateGrid,
-  renderPrintSheet,
+  planPrintPages,
+  maxCopiesOnPage,
+  renderPrintPages,
   canvasToBlob,
+  getPhotoPrintSizeInches,
   type PrintLayoutConfig,
   type PaperSize,
 } from "@/lib/printLayout"
@@ -45,10 +47,11 @@ interface PrintDialogProps {
   children?: React.ReactNode
 }
 
-const DEFAULT_BORDER_IN = 0.08
-/** Small fixed page margin — photos pack from top-left */
-const DEFAULT_MARGIN_IN = 0.125
-const DEFAULT_GAP_IN = 0.1
+const DEFAULT_BORDER_IN = 0.06
+const DEFAULT_MARGIN_IN = 0.1
+const DEFAULT_GAP_IN = 0.08
+
+const COPY_OPTIONS = [1, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48]
 
 export function PrintDialog({
   photoUrl,
@@ -66,7 +69,7 @@ export function PrintDialog({
   const [showSpacing, setShowSpacing] = useState(true)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
-  const previewCanvasRef = useRef<HTMLCanvasElement>(null)
+  const pageCanvasesRef = useRef<HTMLCanvasElement[]>([])
   const previewUrlRef = useRef<string | null>(null)
   const generateIdRef = useRef(0)
 
@@ -82,26 +85,61 @@ export function PrintDialog({
     portrait,
   }), [paperSize, copies, showCutMarks, showPhotoBorders, showSpacing, portrait])
 
-  const grid = calculateGrid(config, photoWidth, photoHeight)
-  const layoutFits = grid.totalFit >= copies
+  const pageLayouts = useMemo(
+    () => planPrintPages(copies, config, photoWidth, photoHeight),
+    [copies, config, photoWidth, photoHeight],
+  )
+
+  const perSheetMax = useMemo(
+    () => maxCopiesOnPage(config, photoWidth, photoHeight),
+    [config, photoWidth, photoHeight],
+  )
+
+  const printSize = getPhotoPrintSizeInches(
+    photoWidth,
+    photoHeight,
+    paperSize.dpi,
+  )
+
+  const firstPage = pageLayouts[0]
+
+  const buildPreviewFromPages = (pages: HTMLCanvasElement[]) => {
+    if (pages.length === 0) return null
+    const gap = 16
+    const maxPreviewW = 400
+    let totalH = 0
+    const sizes = pages.map((p) => {
+      const scale = Math.min(1, maxPreviewW / p.width)
+      return { w: Math.round(p.width * scale), h: Math.round(p.height * scale), page: p, scale }
+    })
+    totalH = sizes.reduce((sum, s, i) => sum + s.h + (i > 0 ? gap : 0), 0)
+    const preview = document.createElement("canvas")
+    preview.width = maxPreviewW
+    preview.height = totalH
+    const ctx = preview.getContext("2d")!
+    ctx.fillStyle = "#f4f4f5"
+    ctx.fillRect(0, 0, preview.width, preview.height)
+    let y = 0
+    for (const s of sizes) {
+      ctx.fillStyle = "#FFFFFF"
+      ctx.fillRect(0, y, s.w, s.h)
+      ctx.drawImage(s.page, 0, y, s.w, s.h)
+      y += s.h + gap
+    }
+    return preview
+  }
 
   const generatePreview = useCallback(async () => {
     if (!photoUrl || !open) return
     const runId = ++generateIdRef.current
     setGenerating(true)
     try {
-      const canvas = await renderPrintSheet(photoUrl, config, photoWidth, photoHeight)
+      const pages = await renderPrintPages(photoUrl, config, photoWidth, photoHeight)
       if (runId !== generateIdRef.current) return
 
-      const maxPreviewW = 400
-      const scale = Math.min(1, maxPreviewW / canvas.width)
-      const preview = document.createElement("canvas")
-      preview.width = Math.round(canvas.width * scale)
-      preview.height = Math.round(canvas.height * scale)
-      const pctx = preview.getContext("2d")!
-      pctx.imageSmoothingEnabled = true
-      pctx.imageSmoothingQuality = "high"
-      pctx.drawImage(canvas, 0, 0, preview.width, preview.height)
+      pageCanvasesRef.current = pages
+      const preview = buildPreviewFromPages(pages)
+      if (!preview) return
 
       const blob = await canvasToBlob(preview)
       if (runId !== generateIdRef.current) return
@@ -110,12 +148,6 @@ export function PrintDialog({
       const url = URL.createObjectURL(blob)
       previewUrlRef.current = url
       setPreviewUrl(url)
-
-      if (previewCanvasRef.current) {
-        previewCanvasRef.current.width = canvas.width
-        previewCanvasRef.current.height = canvas.height
-        previewCanvasRef.current.getContext("2d")!.drawImage(canvas, 0, 0)
-      }
     } catch (err) {
       if (runId === generateIdRef.current) {
         console.error(err)
@@ -137,6 +169,7 @@ export function PrintDialog({
   useEffect(() => {
     if (open) return
     generateIdRef.current += 1
+    pageCanvasesRef.current = []
     if (previewUrlRef.current) {
       URL.revokeObjectURL(previewUrlRef.current)
       previewUrlRef.current = null
@@ -146,25 +179,41 @@ export function PrintDialog({
   }, [open])
 
   const handleDownload = async () => {
-    if (!previewCanvasRef.current || !layoutFits) return
+    const pages = pageCanvasesRef.current
+    if (pages.length === 0) return
     try {
-      const blob = await canvasToBlob(previewCanvasRef.current)
-      const a = document.createElement("a")
-      a.href = URL.createObjectURL(blob)
-      a.download = `print-sheet_${paperSize.id}_${copies}up.png`
-      a.click()
-      URL.revokeObjectURL(a.href)
-      toast.success("Print sheet downloaded")
+      if (pages.length === 1) {
+        const blob = await canvasToBlob(pages[0])
+        const a = document.createElement("a")
+        a.href = URL.createObjectURL(blob)
+        a.download = `print-sheet_${paperSize.id}_${copies}up.png`
+        a.click()
+        URL.revokeObjectURL(a.href)
+      } else {
+        for (let i = 0; i < pages.length; i++) {
+          const blob = await canvasToBlob(pages[i])
+          const a = document.createElement("a")
+          a.href = URL.createObjectURL(blob)
+          a.download = `print-sheet_${paperSize.id}_${copies}up_page${i + 1}.png`
+          a.click()
+          URL.revokeObjectURL(a.href)
+          await new Promise((r) => setTimeout(r, 200))
+        }
+      }
+      toast.success(
+        pages.length === 1 ? "Print sheet downloaded" : `Downloaded ${pages.length} pages`,
+      )
     } catch {
       toast.error("Download failed")
     }
   }
 
   const handlePrint = async () => {
-    if (!previewCanvasRef.current || !layoutFits) return
+    const pages = pageCanvasesRef.current
+    if (pages.length === 0) return
     try {
-      const blob = await canvasToBlob(previewCanvasRef.current)
-      const url = URL.createObjectURL(blob)
+      const blobs = await Promise.all(pages.map((p) => canvasToBlob(p)))
+      const urls = blobs.map((b) => URL.createObjectURL(b))
 
       const printWindow = window.open("")
       if (!printWindow) {
@@ -175,36 +224,48 @@ export function PrintDialog({
 
       const pageW = portrait ? paperSize.heightIn : paperSize.widthIn
       const pageH = portrait ? paperSize.widthIn : paperSize.heightIn
+
+      const sheetsHtml = urls
+        .map(
+          (url) =>
+            `<div class="sheet"><img src="${url}" width="${pages[0].width}" height="${pages[0].height}" alt="Print page" /></div>`,
+        )
+        .join("")
+
       printWindow.document.write(`
         <html>
           <head>
             <title>Print Portrait Sheet</title>
             <style>
               @page { margin: 0; size: ${pageW}in ${pageH}in; }
-              html, body {
-                margin: 0;
-                padding: 0;
-                width: 100%;
-                height: auto;
-                background: #fff;
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              html, body { background: #fff; }
+              .sheet {
+                width: ${pageW}in;
+                height: ${pageH}in;
+                overflow: hidden;
+                page-break-after: always;
+                break-after: page;
               }
-              img {
+              .sheet:last-child { page-break-after: auto; break-after: auto; }
+              .sheet img {
                 display: block;
-                width: 100%;
-                height: auto;
-                margin: 0;
-                padding: 0;
-                vertical-align: top;
+                width: ${pageW}in;
+                height: ${pageH}in;
+                object-fit: fill;
               }
               @media print {
                 html, body { background: #fff; }
-                img { width: 100%; height: auto; page-break-inside: avoid; }
               }
             </style>
           </head>
-          <body>
-            <img src="${url}" alt="Print sheet" onload="window.print(); setTimeout(function(){ window.close(); }, 500);" />
-          </body>
+          <body>${sheetsHtml}</body>
+          <script>
+            window.onload = function() {
+              window.print();
+              setTimeout(function() { window.close(); }, 800);
+            };
+          </script>
         </html>
       `)
       printWindow.document.close()
@@ -213,7 +274,7 @@ export function PrintDialog({
     }
   }
 
-  const actionsEnabled = !generating && !!previewUrl && layoutFits
+  const actionsEnabled = !generating && pageLayouts.length > 0 && !!previewUrl
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -242,7 +303,7 @@ export function PrintDialog({
             <div className="min-w-0">
               <DialogTitle className="text-base">Print layout</DialogTitle>
               <DialogDescription className="text-xs leading-relaxed">
-                Arrange {copies} copies on {paperSize.name} for home printing.
+                Each copy prints at true size ({photoWidth}×{photoHeight} px).
               </DialogDescription>
             </div>
           </div>
@@ -281,7 +342,7 @@ export function PrintDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {[1, 2, 4, 6, 8, 12, 16, 20, 24].map((n) => (
+                    {COPY_OPTIONS.map((n) => (
                       <SelectItem key={n} value={String(n)}>
                         {n}
                       </SelectItem>
@@ -324,15 +385,16 @@ export function PrintDialog({
             <Card className="flex items-start gap-3 rounded-xl border-border/80 bg-muted/25 p-3.5 text-xs">
               <ImageIcon className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
               <div className="min-w-0 space-y-0.5">
-                <p className={cn("font-medium text-foreground", !layoutFits && "text-destructive")}>
-                  {layoutFits
-                    ? `${copies} photo${copies > 1 ? "s" : ""} fit on one sheet`
-                    : `Only ${grid.totalFit} fit — reduce copies or disable spacing`}
+                <p className="font-medium text-foreground">
+                  {copies} copy{copies > 1 ? "ies" : ""} · {pageLayouts.length} sheet
+                  {pageLayouts.length > 1 ? "s" : ""}
                 </p>
                 <p className="text-muted-foreground leading-relaxed">
-                  {grid.cols} × {grid.rows} grid ·{" "}
-                  {portrait ? paperSize.heightIn : paperSize.widthIn}×
-                  {portrait ? paperSize.widthIn : paperSize.heightIn}&quot; at {paperSize.dpi} DPI
+                  Each photo {printSize.widthIn.toFixed(2)}&quot; × {printSize.heightIn.toFixed(2)}&quot; (
+                  {photoWidth}×{photoHeight} px at {paperSize.dpi} DPI)
+                  {firstPage
+                    ? ` · up to ${perSheetMax}/sheet · ${firstPage.cols}×${firstPage.rows} on page 1`
+                    : ""}
                 </p>
               </div>
             </Card>
@@ -365,10 +427,12 @@ export function PrintDialog({
             </div>
 
             <div className="space-y-2">
-              <Label className="text-xs">Preview</Label>
+              <Label className="text-xs">
+                Preview{pageLayouts.length > 1 ? ` (${pageLayouts.length} pages)` : ""}
+              </Label>
               <div
                 className={cn(
-                  "flex items-center justify-center overflow-hidden rounded-xl border border-border/80 bg-white p-4 min-h-[200px]",
+                  "flex items-center justify-center overflow-hidden rounded-xl border border-border/80 bg-zinc-100 p-4 min-h-[200px]",
                   generating && "opacity-70",
                 )}
               >
@@ -390,8 +454,6 @@ export function PrintDialog({
             </div>
           </div>
         </div>
-
-        <canvas ref={previewCanvasRef} className="hidden" aria-hidden />
 
         <div className="shrink-0 border-t bg-muted/20 px-6 py-4">
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:gap-3">

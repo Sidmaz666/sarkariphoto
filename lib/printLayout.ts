@@ -18,129 +18,175 @@ export const PAPER_SIZES: PaperSize[] = [
 
 export type PrintLayoutConfig = {
   paperSize: PaperSize
-  /** How many copies to arrange on the sheet */
   copies: number
-  /** Border around each photo in inches */
   borderIn: number
-  /** Margin around the page edge */
   marginIn: number
-  /** Gap between photos */
   gapIn: number
-  /** Dashed cut lines at photo edges */
   showCutMarks: boolean
-  /** Solid border around each photo cell */
   showPhotoBorders: boolean
-  /** Visible gap between photo cells */
   showSpacing: boolean
-  /** Portrait orientation (swap paper width/height) */
   portrait?: boolean
 }
 
 export type CalculatedGrid = {
   cols: number
   rows: number
-  /** Pixel dimensions of the print canvas */
   canvasW: number
   canvasH: number
-  /** Pixel dimensions of each photo cell (photo + border) */
   cellW: number
   cellH: number
-  /** Pixel dimensions of just the photo area (inside border) */
   photoAreaW: number
   photoAreaH: number
-  /** Pixel offsets for margins */
   marginXPx: number
   marginYPx: number
-  /** Total photos that fit (cols × rows) */
-  totalFit: number
+  /** Copies drawn on this page (≤ cols × rows) */
+  copiesOnPage: number
 }
 
-/** Calculate the best grid layout for the given config and photo dimensions */
-export function calculateGrid(
+function pagePixels(config: PrintLayoutConfig) {
+  const { paperSize, portrait } = config
+  const dpi = paperSize.dpi
+  return {
+    pw: (portrait ? paperSize.heightIn : paperSize.widthIn) * dpi,
+    ph: (portrait ? paperSize.widthIn : paperSize.heightIn) * dpi,
+    dpi,
+    m: config.marginIn * dpi,
+    g: config.showSpacing ? config.gapIn * dpi : 0,
+    b: config.showPhotoBorders ? config.borderIn * dpi : 0,
+  }
+}
+
+/** Each photo prints at true pixel size → photoW/dpi × photoH/dpi inches on paper */
+function cellDimensions(photoW: number, photoH: number, b: number) {
+  return {
+    cellW: photoW + b * 2,
+    cellH: photoH + b * 2,
+    photoAreaW: photoW,
+    photoAreaH: photoH,
+  }
+}
+
+function gridFitsPage(
+  cols: number,
+  rows: number,
+  cellW: number,
+  cellH: number,
+  pw: number,
+  ph: number,
+  m: number,
+  g: number,
+): boolean {
+  const usableW = pw - m * 2
+  const usableH = ph - m * 2
+  const totalW = cols * cellW + (cols - 1) * g
+  const totalH = rows * cellH + (rows - 1) * g
+  return totalW <= usableW && totalH <= usableH
+}
+
+/** Best top-left grid for exactly `copies` photos at full portrait pixel size */
+export function calculateGridForCopies(
+  copies: number,
   config: PrintLayoutConfig,
   photoW: number,
   photoH: number,
-): CalculatedGrid {
-  const { paperSize, copies, borderIn, marginIn, gapIn, portrait, showPhotoBorders, showSpacing } = config
-  const dpi = paperSize.dpi
+): CalculatedGrid | null {
+  if (copies < 1) return null
 
-  const pw = (portrait ? paperSize.heightIn : paperSize.widthIn) * dpi
-  const ph = (portrait ? paperSize.widthIn : paperSize.heightIn) * dpi
-  const m = marginIn * dpi
-  const g = showSpacing ? gapIn * dpi : 0
-  const b = showPhotoBorders ? borderIn * dpi : 0
+  const { pw, ph, m, g, b, dpi } = pagePixels(config)
+  const { cellW, cellH, photoAreaW, photoAreaH } = cellDimensions(photoW, photoH, b)
 
-  // Photo area inside border
-  const paW = photoW
-  const paH = photoH
+  let best: { cols: number; rows: number; waste: number; extraSlots: number } | null = null
 
-  // Cell = photo + 2× border
-  const cellW = paW + b * 2
-  const cellH = paH + b * 2
-
-  // Usable area
-  const usableW = pw - m * 2
-  const usableH = ph - m * 2
-
-  // Best grid: fits all copies, maximizes slots, then minimizes wasted space (top-left packing)
-  let bestCols = 1
-  let bestRows = 1
-  let bestTotal = 0
-  let bestWaste = Infinity
-
-  for (let cols = 1; cols <= 10; cols++) {
+  for (let cols = 1; cols <= copies; cols++) {
     const rows = Math.ceil(copies / cols)
+    if (!gridFitsPage(cols, rows, cellW, cellH, pw, ph, m, g)) continue
+
+    const slots = cols * rows
+    const usableW = pw - m * 2
+    const usableH = ph - m * 2
     const totalW = cols * cellW + (cols - 1) * g
     const totalH = rows * cellH + (rows - 1) * g
+    const waste = (usableW - totalW) + (usableH - totalH)
+    const extraSlots = slots - copies
 
-    if (totalW <= usableW && totalH <= usableH) {
-      const slots = cols * rows
-      if (slots >= copies) {
-        const waste = (usableW - totalW) + (usableH - totalH)
-        const better =
-          slots > bestTotal ||
-          (slots === bestTotal && waste < bestWaste) ||
-          (slots === bestTotal && waste === bestWaste && cols > bestCols)
-        if (better) {
-          bestCols = cols
-          bestRows = rows
-          bestTotal = slots
-          bestWaste = waste
-        }
-      }
+    const better =
+      !best ||
+      extraSlots < best.extraSlots ||
+      (extraSlots === best.extraSlots && waste < best.waste) ||
+      (extraSlots === best.extraSlots && waste === best.waste && cols > best.cols)
+
+    if (better) {
+      best = { cols, rows, waste, extraSlots }
     }
   }
 
-  // Fallback: single photo scaled to fit usable area from top-left margin
-  if (bestTotal < copies) {
-    return {
-      cols: 1, rows: 1,
-      canvasW: pw, canvasH: ph,
-      cellW: Math.min(paW + b * 2, usableW),
-      cellH: Math.min(paH + b * 2, usableH),
-      photoAreaW: paW, photoAreaH: paH,
-      marginXPx: m, marginYPx: m,
-      totalFit: 1,
-    }
-  }
-
-  // Anchor grid at top-left inside page margin (no vertical/horizontal centering)
-  const marginXPx = m
-  const marginYPx = m
+  if (!best) return null
 
   return {
-    cols: bestCols,
-    rows: bestRows,
+    cols: best.cols,
+    rows: best.rows,
     canvasW: pw,
     canvasH: ph,
     cellW,
     cellH,
-    photoAreaW: paW,
-    photoAreaH: paH,
-    marginXPx,
-    marginYPx,
-    totalFit: bestTotal,
+    photoAreaW,
+    photoAreaH,
+    marginXPx: m,
+    marginYPx: m,
+    copiesOnPage: copies,
   }
+}
+
+/** Maximum copies that fit on one sheet at true portrait dimensions */
+export function maxCopiesOnPage(
+  config: PrintLayoutConfig,
+  photoW: number,
+  photoH: number,
+): number {
+  for (let n = 100; n >= 1; n--) {
+    if (calculateGridForCopies(n, config, photoW, photoH)) return n
+  }
+  return 1
+}
+
+/** Split total copies across pages; every photo stays true output pixel size */
+export function planPrintPages(
+  totalCopies: number,
+  config: PrintLayoutConfig,
+  photoW: number,
+  photoH: number,
+): CalculatedGrid[] {
+  const pages: CalculatedGrid[] = []
+  let remaining = totalCopies
+  const perPageMax = maxCopiesOnPage(config, photoW, photoH)
+
+  while (remaining > 0) {
+    const onPage = Math.min(remaining, perPageMax)
+    const grid = calculateGridForCopies(onPage, config, photoW, photoH)
+    if (!grid) break
+    pages.push(grid)
+    remaining -= onPage
+  }
+
+  if (pages.length === 0 && totalCopies > 0) {
+    const fallback = calculateGridForCopies(1, config, photoW, photoH)
+    if (fallback) pages.push(fallback)
+  }
+
+  return pages
+}
+
+/** @deprecated Use calculateGridForCopies / planPrintPages */
+export function calculateGrid(
+  config: PrintLayoutConfig,
+  photoW: number,
+  photoH: number,
+): CalculatedGrid & { totalFit: number } {
+  const perPage = maxCopiesOnPage(config, photoW, photoH)
+  const grid =
+    calculateGridForCopies(Math.min(config.copies, perPage), config, photoW, photoH) ??
+    calculateGridForCopies(1, config, photoW, photoH)!
+  return { ...grid, totalFit: perPage }
 }
 
 const loadImage = (src: string): Promise<HTMLImageElement> =>
@@ -152,143 +198,136 @@ const loadImage = (src: string): Promise<HTMLImageElement> =>
     img.src = src
   })
 
-  
-/** Generate a print sheet canvas */
+function drawPage(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  grid: CalculatedGrid,
+  config: PrintLayoutConfig,
+) {
+  const dpi = config.paperSize.dpi
+  const b = config.showPhotoBorders ? config.borderIn * dpi : 0
+  const gapPx = config.showSpacing ? config.gapIn * dpi : 0
+
+  ctx.fillStyle = "#FFFFFF"
+  ctx.fillRect(0, 0, grid.canvasW, grid.canvasH)
+
+  if (config.showCutMarks) {
+    ctx.strokeStyle = "#CCCCCC"
+    ctx.lineWidth = 1
+    ctx.setLineDash([4, 4])
+    for (let i = 0; i < grid.copiesOnPage; i++) {
+      const r = Math.floor(i / grid.cols)
+      const c = i % grid.cols
+      const x = grid.marginXPx + c * (grid.cellW + gapPx) + b
+      const y = grid.marginYPx + r * (grid.cellH + gapPx) + b
+      ctx.strokeRect(x, y, grid.photoAreaW, grid.photoAreaH)
+    }
+    ctx.setLineDash([])
+  }
+
+  for (let i = 0; i < grid.copiesOnPage; i++) {
+    const r = Math.floor(i / grid.cols)
+    const c = i % grid.cols
+    const cellX = grid.marginXPx + c * (grid.cellW + gapPx)
+    const cellY = grid.marginYPx + r * (grid.cellH + gapPx)
+
+    ctx.fillStyle = "#FFFFFF"
+    ctx.fillRect(cellX, cellY, grid.cellW, grid.cellH)
+
+    if (config.showPhotoBorders) {
+      ctx.strokeStyle = "#BBBBBB"
+      ctx.lineWidth = 1
+      ctx.strokeRect(cellX + 0.5, cellY + 0.5, grid.cellW - 1, grid.cellH - 1)
+    }
+
+    const photoX = cellX + b
+    const photoY = cellY + b
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = "high"
+    ctx.drawImage(img, photoX, photoY, grid.photoAreaW, grid.photoAreaH)
+  }
+
+  if (config.showCutMarks) {
+    const markLen = 12
+    ctx.strokeStyle = "#999999"
+    ctx.lineWidth = 1
+    for (let i = 0; i < grid.copiesOnPage; i++) {
+      const r = Math.floor(i / grid.cols)
+      const c = i % grid.cols
+      const x = grid.marginXPx + c * (grid.cellW + gapPx) - 1
+      const y = grid.marginYPx + r * (grid.cellH + gapPx) - 1
+      const cx = x + grid.cellW + 2
+      const cy = y + grid.cellH + 2
+
+      ctx.beginPath()
+      ctx.moveTo(x, y + markLen)
+      ctx.lineTo(x, y)
+      ctx.lineTo(x + markLen, y)
+      ctx.stroke()
+
+      ctx.beginPath()
+      ctx.moveTo(cx - markLen, y)
+      ctx.lineTo(cx, y)
+      ctx.lineTo(cx, y + markLen)
+      ctx.stroke()
+
+      ctx.beginPath()
+      ctx.moveTo(x, cy - markLen)
+      ctx.lineTo(x, cy)
+      ctx.lineTo(x + markLen, cy)
+      ctx.stroke()
+
+      ctx.beginPath()
+      ctx.moveTo(cx - markLen, cy)
+      ctx.lineTo(cx, cy)
+      ctx.lineTo(cx, cy - markLen)
+      ctx.stroke()
+    }
+  }
+}
+
+function renderPageCanvas(
+  img: HTMLImageElement,
+  grid: CalculatedGrid,
+  config: PrintLayoutConfig,
+): HTMLCanvasElement {
+  const canvas = document.createElement("canvas")
+  canvas.width = grid.canvasW
+  canvas.height = grid.canvasH
+  drawPage(canvas.getContext("2d")!, img, grid, config)
+  return canvas
+}
+
+/** One or more full-size print pages at true portrait dimensions per copy */
+export async function renderPrintPages(
+  photoUrl: string,
+  config: PrintLayoutConfig,
+  photoWidth: number,
+  photoHeight: number,
+): Promise<HTMLCanvasElement[]> {
+  const img = await loadImage(photoUrl)
+  const layouts = planPrintPages(config.copies, config, photoWidth, photoHeight)
+  return layouts.map((grid) => renderPageCanvas(img, grid, config))
+}
+
+/** First page only (legacy) */
 export async function renderPrintSheet(
   photoUrl: string,
   config: PrintLayoutConfig,
   photoWidth: number,
   photoHeight: number,
 ): Promise<HTMLCanvasElement> {
-  const img = await loadImage(photoUrl)
-  const grid = calculateGrid(config, photoWidth, photoHeight)
-  const dpi = config.paperSize.dpi
-
-  const canvas = document.createElement("canvas")
-  canvas.width = grid.canvasW
-  canvas.height = grid.canvasH
-  const ctx = canvas.getContext("2d")!
-  const b = config.showPhotoBorders ? config.borderIn * dpi : 0
-  const gapPx = config.showSpacing ? config.gapIn * dpi : 0
-
-  // Fill with white
-  ctx.fillStyle = "#FFFFFF"
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-
-  // Light page margin guide
-  if (config.marginIn > 0) {
-    ctx.strokeStyle = "#EEEEEE"
-    ctx.lineWidth = 1
-    ctx.strokeRect(
-      config.marginIn * dpi,
-      config.marginIn * dpi,
-      canvas.width - config.marginIn * dpi * 2,
-      canvas.height - config.marginIn * dpi * 2,
-    )
-  }
-
-  // Draw cut marks first (behind photos)
-  if (config.showCutMarks) {
-    ctx.strokeStyle = "#CCCCCC"
-    ctx.lineWidth = 1
-    ctx.setLineDash([4, 4])
-
-    for (let r = 0; r < grid.rows; r++) {
-      for (let c = 0; c < grid.cols; c++) {
-        const x = grid.marginXPx + c * (grid.cellW + gapPx) + b
-        const y = grid.marginYPx + r * (grid.cellH + gapPx) + b
-        ctx.strokeRect(x, y, grid.photoAreaW, grid.photoAreaH)
-      }
-    }
-
-    ctx.setLineDash([])
-  }
-
-  // Draw each photo
-  const copiesToDraw = Math.min(config.copies, grid.totalFit)
-  for (let i = 0; i < copiesToDraw; i++) {
-    const r = Math.floor(i / grid.cols)
-    const c = i % grid.cols
-
-    // Cell top-left (includes border)
-    const cellX = grid.marginXPx + c * (grid.cellW + gapPx)
-    const cellY = grid.marginYPx + r * (grid.cellH + gapPx)
-
-    // Draw white border background
-    ctx.fillStyle = "#FFFFFF"
-    ctx.fillRect(cellX, cellY, grid.cellW, grid.cellH)
-
-    // Draw thin border line around each photo cell
-    if (config.showPhotoBorders) {
-      ctx.strokeStyle = "#BBBBBB"
-      ctx.lineWidth = 1
-      ctx.strokeRect(cellX + 0.5, cellY + 0.5, grid.cellW - 1, grid.cellH - 1)
-      if (b > 0) {
-        ctx.strokeStyle = "#DDDDDD"
-        ctx.lineWidth = 0.5
-        ctx.strokeRect(cellX + b, cellY + b, grid.photoAreaW, grid.photoAreaH)
-      }
-    }
-
-    // Draw photo inside the border
-    const photoX = cellX + b
-    const photoY = cellY + b
-
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = "high"
-    ctx.drawImage(img, photoX, photoY, grid.photoAreaW, grid.photoAreaH)
-  }
-
-  // Additional cut marks at corners
-  if (config.showCutMarks) {
-    const markLen = 12
-    ctx.strokeStyle = "#999999"
-    ctx.lineWidth = 1
-    ctx.setLineDash([])
-
-    // Corner marks at each photo
-    for (let r = 0; r < grid.rows; r++) {
-      for (let c = 0; c < grid.cols; c++) {
-        const x = grid.marginXPx + c * (grid.cellW + gapPx) - 1
-        const y = grid.marginYPx + r * (grid.cellH + gapPx) - 1
-        const cx = x + grid.cellW + 2
-        const cy = y + grid.cellH + 2
-
-        // Top-left corner
-        ctx.beginPath()
-        ctx.moveTo(x, y + markLen)
-        ctx.lineTo(x, y)
-        ctx.lineTo(x + markLen, y)
-        ctx.stroke()
-
-        // Top-right corner
-        ctx.beginPath()
-        ctx.moveTo(cx - markLen, y)
-        ctx.lineTo(cx, y)
-        ctx.lineTo(cx, y + markLen)
-        ctx.stroke()
-
-        // Bottom-left corner
-        ctx.beginPath()
-        ctx.moveTo(x, cy - markLen)
-        ctx.lineTo(x, cy)
-        ctx.lineTo(x + markLen, cy)
-        ctx.stroke()
-
-        // Bottom-right corner
-        ctx.beginPath()
-        ctx.moveTo(cx - markLen, cy)
-        ctx.lineTo(cx, cy)
-        ctx.lineTo(cx, cy - markLen)
-        ctx.stroke()
-      }
-    }
-  }
-
-  return canvas
+  const pages = await renderPrintPages(photoUrl, config, photoWidth, photoHeight)
+  return pages[0]!
 }
 
-/** Convert a canvas to a PNG blob */
+export function getPhotoPrintSizeInches(photoW: number, photoH: number, dpi: number) {
+  return {
+    widthIn: photoW / dpi,
+    heightIn: photoH / dpi,
+  }
+}
+
 export function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(

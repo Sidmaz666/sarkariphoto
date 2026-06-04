@@ -172,31 +172,6 @@ export default function PhotoStudio() {
     setReposHistory([])
     setReposHistoryIdx(-1)
     reposIdxRef.current = -1
-
-    // Auto-detect closest preset from image dimensions
-    const img = new Image()
-    img.onload = () => {
-      const ar = img.naturalWidth / img.naturalHeight
-      let best = PRESETS[0]
-      let bestDiff = Infinity
-      for (const p of PRESETS) {
-        if (p.id === "custom") continue
-        if (p.signature) continue
-        const pAr = p.widthPx / p.heightPx
-        const diff = Math.abs(ar - pAr)
-        if (diff < bestDiff) {
-          bestDiff = diff
-          best = p
-        }
-      }
-      if (bestDiff < 0.3) {
-        applyPreset(best.id)
-        toast.info(`Suggested template: ${best.name}`, {
-          description: best.description,
-        })
-      }
-    }
-    img.src = url
   }
 
   const onDrop = (e: React.DragEvent) => {
