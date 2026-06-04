@@ -82,10 +82,11 @@ export function calculateGrid(
   const usableW = pw - m * 2
   const usableH = ph - m * 2
 
-  // Try to find the best grid arrangement
+  // Best grid: fits all copies, maximizes slots, then minimizes wasted space (top-left packing)
   let bestCols = 1
   let bestRows = 1
-  let bestTotal = 1
+  let bestTotal = 0
+  let bestWaste = Infinity
 
   for (let cols = 1; cols <= 10; cols++) {
     const rows = Math.ceil(copies / cols)
@@ -93,16 +94,25 @@ export function calculateGrid(
     const totalH = rows * cellH + (rows - 1) * g
 
     if (totalW <= usableW && totalH <= usableH) {
-      if (cols * rows >= copies && cols * rows >= bestTotal) {
-        bestCols = cols
-        bestRows = rows
-        bestTotal = cols * rows
+      const slots = cols * rows
+      if (slots >= copies) {
+        const waste = (usableW - totalW) + (usableH - totalH)
+        const better =
+          slots > bestTotal ||
+          (slots === bestTotal && waste < bestWaste) ||
+          (slots === bestTotal && waste === bestWaste && cols > bestCols)
+        if (better) {
+          bestCols = cols
+          bestRows = rows
+          bestTotal = slots
+          bestWaste = waste
+        }
       }
     }
   }
 
-  // Fallback: if nothing fits, use 1×1 centered
-  if (bestTotal < 1) {
+  // Fallback: single photo scaled to fit usable area from top-left margin
+  if (bestTotal < copies) {
     return {
       cols: 1, rows: 1,
       canvasW: pw, canvasH: ph,
@@ -114,13 +124,9 @@ export function calculateGrid(
     }
   }
 
-  // Recalculate with the best grid
-  const totalW = bestCols * cellW + (bestCols - 1) * g
-  const totalH = bestRows * cellH + (bestRows - 1) * g
-
-  // Center the grid on the page
-  const marginXPx = (pw - totalW) / 2
-  const marginYPx = (ph - totalH) / 2
+  // Anchor grid at top-left inside page margin (no vertical/horizontal centering)
+  const marginXPx = m
+  const marginYPx = m
 
   return {
     cols: bestCols,

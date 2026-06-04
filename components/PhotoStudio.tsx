@@ -869,7 +869,7 @@ export default function PhotoStudio() {
                   <MagnifyingGlass className="pointer-events-none absolute left-2 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
                   <Input
                     autoFocus
-                    placeholder="Search 30+ templates…"
+                    placeholder="Search 50+ templates…"
                     value={presetSearch}
                     onChange={(e) => setPresetSearch(e.target.value)}
                     onKeyDown={(e) => e.stopPropagation()}

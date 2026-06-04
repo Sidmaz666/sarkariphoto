@@ -46,8 +46,9 @@ interface PrintDialogProps {
 }
 
 const DEFAULT_BORDER_IN = 0.08
-const DEFAULT_MARGIN_IN = 0.25
-const DEFAULT_GAP_IN = 0.12
+/** Small fixed page margin — photos pack from top-left */
+const DEFAULT_MARGIN_IN = 0.125
+const DEFAULT_GAP_IN = 0.1
 
 export function PrintDialog({
   photoUrl,
@@ -172,22 +173,37 @@ export function PrintDialog({
         return
       }
 
+      const pageW = portrait ? paperSize.heightIn : paperSize.widthIn
+      const pageH = portrait ? paperSize.widthIn : paperSize.heightIn
       printWindow.document.write(`
         <html>
           <head>
             <title>Print Portrait Sheet</title>
             <style>
-              @page { margin: 0; size: ${portrait ? paperSize.heightIn : paperSize.widthIn}in ${portrait ? paperSize.widthIn : paperSize.heightIn}in; }
-              body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #f0f0f0; }
-              img { width: 100%; height: auto; }
+              @page { margin: 0; size: ${pageW}in ${pageH}in; }
+              html, body {
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                height: auto;
+                background: #fff;
+              }
+              img {
+                display: block;
+                width: 100%;
+                height: auto;
+                margin: 0;
+                padding: 0;
+                vertical-align: top;
+              }
               @media print {
-                body { background: white; }
+                html, body { background: #fff; }
                 img { width: 100%; height: auto; page-break-inside: avoid; }
               }
             </style>
           </head>
           <body>
-            <img src="${url}" onload="window.print(); setTimeout(function(){ window.close(); }, 500);" />
+            <img src="${url}" alt="Print sheet" onload="window.print(); setTimeout(function(){ window.close(); }, 500);" />
           </body>
         </html>
       `)
