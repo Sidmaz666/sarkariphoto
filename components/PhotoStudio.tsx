@@ -65,6 +65,7 @@ import { CropOverlay } from "@/components/CropOverlay"
 import { SourceCrop } from "@/components/SourceCrop"
 import { CompositionGuide } from "@/components/CompositionGuide"
 import { PrintDialog } from "@/components/PrintDialog"
+import { EditToolbar } from "@/components/EditToolbar"
 
 export default function PhotoStudio() {
   const [file, setFile] = useState<File | null>(null)
@@ -274,18 +275,17 @@ export default function PhotoStudio() {
   }, [])
 
   const handleReposOffsetChange = useCallback((x: number, y: number) => {
-    setAdjustments((a) => {
-      const next = { ...a, offsetX: x, offsetY: y }
-      pushReposHistory({ offsetX: x, offsetY: y, scale: a.scale })
-      return next
-    })
-  }, [pushReposHistory])
+    setAdjustments((a) => ({ ...a, offsetX: x, offsetY: y }))
+  }, [])
 
   const handleReposScaleChange = useCallback((s: number) => {
+    setAdjustments((a) => ({ ...a, scale: s }))
+  }, [])
+
+  const snapshotReposHistory = useCallback(() => {
     setAdjustments((a) => {
-      const next = { ...a, scale: s }
-      pushReposHistory({ offsetX: a.offsetX, offsetY: a.offsetY, scale: s })
-      return next
+      pushReposHistory({ offsetX: a.offsetX, offsetY: a.offsetY, scale: a.scale })
+      return a
     })
   }, [pushReposHistory])
 
@@ -537,6 +537,32 @@ export default function PhotoStudio() {
   const currentPreset = PRESETS.find((p) => p.id === presetId)
   const isSignature = currentPreset?.signature ?? false
   const pipelineActive = pipelineSteps.some((s) => s.status === "running")
+  const cropEditorActive = showManualCrop && !!previewURL && !pipelineActive
+  const reposEditorActive = showReposition && !!result && !!previewURL && !pipelineActive
+
+  const cropToolbar = cropEditorActive ? (
+    <EditToolbar
+      canUndo={cropHistoryIdx > 0}
+      canRedo={cropHistoryIdx < cropHistory.length - 1}
+      onUndo={undoCrop}
+      onRedo={redoCrop}
+      onCancel={cancelCrop}
+      onSave={applyCrop}
+      saveLabel="Apply crop"
+    />
+  ) : null
+
+  const reposToolbar = reposEditorActive ? (
+    <EditToolbar
+      canUndo={reposHistoryIdx > 0}
+      canRedo={reposHistoryIdx < reposHistory.length - 1}
+      onUndo={undorepos}
+      onRedo={redorepos}
+      onCancel={cancelRepos}
+      onSave={saveRepos}
+      saveLabel="Save position"
+    />
+  ) : null
 
   return (
     <div className="flex flex-col gap-6">
@@ -581,86 +607,50 @@ export default function PhotoStudio() {
           </Card>
         ) : (
           <div className="space-y-4">
-            {/* ── Preview before generation ── */}
-            {previewURL && !result && !pipelineActive && (
-              showManualCrop ? (
-                <>
-                  <SourceCrop
-                    imageUrl={previewURL}
-                    aspectRatio={width / height}
-                    crop={sourceCrop}
-                    onChange={setSourceCrop}
-                    onCropEnd={handleCropEnd}
-                    className="max-h-[420px] w-full"
-                  />
+            {/* ── Manual crop (source image) ── */}
+            {cropEditorActive && (
+              <>
+                <SourceCrop
+                  imageUrl={previewURL!}
+                  aspectRatio={width / height}
+                  crop={sourceCrop}
+                  onChange={setSourceCrop}
+                  onCropEnd={handleCropEnd}
+                  className="max-h-[420px] w-full"
+                />
+                {cropToolbar}
+              </>
+            )}
+
+            {/* ── Preview before / without active crop ── */}
+            {previewURL && !pipelineActive && !cropEditorActive && !reposEditorActive && !result && (
+              <Card className="overflow-hidden p-0">
+                <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-2">
                   <div className="flex items-center gap-2">
-                    <div className="flex gap-1">
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        onClick={undoCrop}
-                        disabled={cropHistoryIdx <= 0}
-                        className="text-[11px] px-2"
-                      >
-                        ↩ Undo
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        onClick={redoCrop}
-                        disabled={cropHistoryIdx >= cropHistory.length - 1}
-                        className="text-[11px] px-2"
-                      >
-                        ↪ Redo
-                      </Button>
-                    </div>
-                    <div className="flex-1" />
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={cancelCrop}
-                      className="text-xs"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={applyCrop}
-                      className="text-xs"
-                    >
-                      Apply Crop
-                    </Button>
-                  </div>
-                </>
-              ) : (
-                <Card className="overflow-hidden p-0">
-                  <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-2">
-                    <div className="flex items-center gap-2">
-                      <ImageIcon className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Preview
-                      </span>
-                    </div>
-                    <Badge variant="secondary" className="text-xs">
-                      {file ? (file.size / 1024).toFixed(0) : "?"} KB
-                    </Badge>
-                  </div>
-                  <div className="relative flex items-center justify-center bg-[conic-gradient(at_50%_50%,_oklch(0.95_0.01_250)_0deg,_oklch(0.97_0.01_250)_90deg,_oklch(0.95_0.01_250)_180deg,_oklch(0.97_0.01_250)_270deg)] p-4">
-                    <img
-                      src={previewURL}
-                      alt="Preview"
-                      className="max-h-[400px] w-full rounded-sm object-contain"
-                      style={filterCss}
-                    />
-                    {showGuide && <CompositionGuide />}
-                  </div>
-                  <div className="flex items-center justify-center border-t bg-muted/20 px-4 py-2.5">
-                    <span className="text-xs text-muted-foreground">
-                      Adjust settings below and tap <strong>Generate Portrait</strong>
+                    <ImageIcon className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Preview
                     </span>
                   </div>
-                </Card>
-              )
+                  <Badge variant="secondary" className="text-xs">
+                    {file ? (file.size / 1024).toFixed(0) : "?"} KB
+                  </Badge>
+                </div>
+                <div className="relative flex items-center justify-center bg-[conic-gradient(at_50%_50%,_oklch(0.95_0.01_250)_0deg,_oklch(0.97_0.01_250)_90deg,_oklch(0.95_0.01_250)_180deg,_oklch(0.97_0.01_250)_270deg)] p-4">
+                  <img
+                    src={previewURL}
+                    alt="Preview"
+                    className="max-h-[400px] w-full rounded-sm object-contain"
+                    style={filterCss}
+                  />
+                  {showGuide && <CompositionGuide />}
+                </div>
+                <div className="flex items-center justify-center border-t bg-muted/20 px-4 py-2.5">
+                  <span className="text-xs text-muted-foreground">
+                    Adjust settings below and tap <strong>Generate Portrait</strong>
+                  </span>
+                </div>
+              </Card>
             )}
 
             {/* ── During processing ── */}
@@ -683,36 +673,34 @@ export default function PhotoStudio() {
               </Card>
             )}
 
-            {/* ── After generation ── */}
-            {previewURL && result && !pipelineActive && (
+            {/* ── Reposition (after generation) ── */}
+            {reposEditorActive && result && (
               <>
-                {showReposition ? (
-                  <CropOverlay
-                    imageUrl={result.url}
-                    bgColor={bgColor}
-                    aspectRatio={width / height}
-                    offsetX={adjustments.offsetX}
-                    offsetY={adjustments.offsetY}
-                    scale={adjustments.scale}
-                    className="max-h-[480px] w-full"
-                    onOffsetChange={handleReposOffsetChange}
-                    onScaleChange={handleReposScaleChange}
-                    onUndo={undorepos}
-                    onRedo={redorepos}
-                    canUndo={reposHistoryIdx > 0}
-                    canRedo={reposHistoryIdx < reposHistory.length - 1}
-                    onSave={saveRepos}
-                    onCancel={cancelRepos}
-                  />
-                ) : (
-                  <BeforeAfter
-                    beforeUrl={previewURL}
-                    afterUrl={result.url}
-                    aspectRatio={width / height}
-                    className="max-h-[480px] w-full"
-                  />
-                )}
+                <CropOverlay
+                  imageUrl={result.url}
+                  bgColor={bgColor}
+                  aspectRatio={width / height}
+                  offsetX={adjustments.offsetX}
+                  offsetY={adjustments.offsetY}
+                  scale={adjustments.scale}
+                  className="max-h-[480px] w-full"
+                  onOffsetChange={handleReposOffsetChange}
+                  onScaleChange={handleReposScaleChange}
+                  onInteractionEnd={snapshotReposHistory}
+                  hideToolbar
+                />
+                {reposToolbar}
               </>
+            )}
+
+            {/* ── After generation (compare view) ── */}
+            {previewURL && result && !pipelineActive && !reposEditorActive && !cropEditorActive && (
+              <BeforeAfter
+                beforeUrl={previewURL}
+                afterUrl={result.url}
+                aspectRatio={width / height}
+                className="max-h-[480px] w-full"
+              />
             )}
 
             {/* Pipeline progress */}
@@ -1008,9 +996,16 @@ export default function PhotoStudio() {
             />
           </div>
           {showManualCrop && (
-            <p className="text-[10px] text-muted-foreground pl-5">
-              Drag the rectangle to select the area to process
-            </p>
+            <>
+              <p className="text-[10px] text-muted-foreground pl-5">
+                Drag the rectangle to select the area to process
+              </p>
+              {cropToolbar && (
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  {cropToolbar}
+                </div>
+              )}
+            </>
           )}
           {!isSignature && (
             <div className="flex items-center justify-between">
@@ -1048,9 +1043,16 @@ export default function PhotoStudio() {
                 />
               </div>
               {showReposition && (
-                <p className="text-[10px] text-muted-foreground pl-5">
-                  Drag image to reposition · use zoom controls to resize
-                </p>
+                <>
+                  <p className="text-[10px] text-muted-foreground pl-5">
+                    Drag image to reposition · use zoom controls to resize
+                  </p>
+                  {reposToolbar && (
+                    <div className="rounded-lg border bg-muted/20 p-3">
+                      {reposToolbar}
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}

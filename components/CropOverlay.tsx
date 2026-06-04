@@ -21,6 +21,10 @@ interface CropOverlayProps {
   canRedo?: boolean
   onSave?: () => void
   onCancel?: () => void
+  /** Called when a drag/resize gesture ends (for history snapshots) */
+  onInteractionEnd?: () => void
+  /** Hide built-in toolbar (parent renders EditToolbar) */
+  hideToolbar?: boolean
 }
 
 export function CropOverlay({
@@ -39,6 +43,8 @@ export function CropOverlay({
   canRedo = false,
   onSave,
   onCancel,
+  onInteractionEnd,
+  hideToolbar = false,
 }: CropOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [imgLoaded, setImgLoaded] = useState(false)
@@ -75,11 +81,25 @@ export function CropOverlay({
     onOffsetChange(startRef.current.ox + dx, startRef.current.oy + dy)
   }
 
-  const handlePointerUp = () => setMode("idle")
+  const handlePointerUp = () => {
+    if (mode !== "idle") onInteractionEnd?.()
+    setMode("idle")
+  }
 
-  const zoomIn = () => onScaleChange(Math.round(clamp(scale * 1.2, 0.3, 5) * 20) / 20)
-  const zoomOut = () => onScaleChange(Math.round(clamp(scale / 1.2, 0.3, 5) * 20) / 20)
-  const zoomReset = () => { onScaleChange(1); onOffsetChange(0, 0) }
+  const endZoom = () => onInteractionEnd?.()
+  const zoomIn = () => {
+    onScaleChange(Math.round(clamp(scale * 1.2, 0.3, 5) * 20) / 20)
+    endZoom()
+  }
+  const zoomOut = () => {
+    onScaleChange(Math.round(clamp(scale / 1.2, 0.3, 5) * 20) / 20)
+    endZoom()
+  }
+  const zoomReset = () => {
+    onScaleChange(1)
+    onOffsetChange(0, 0)
+    endZoom()
+  }
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -158,29 +178,28 @@ export function CropOverlay({
         </div>
       </div>
 
-      {/* Undo / Redo / Save / Cancel */}
-      <div className="flex items-center gap-2">
-        <div className="flex gap-1">
-          <button type="button" onClick={onUndo} disabled={!canUndo} className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-foreground/70 hover:bg-muted disabled:opacity-30 transition-colors">
-            <ArrowCounterClockwise className="h-3 w-3" />
-            Undo
-          </button>
-          <button type="button" onClick={onRedo} disabled={!canRedo} className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-foreground/70 hover:bg-muted disabled:opacity-30 transition-colors">
-            <ArrowClockwise className="h-3 w-3" />
-            Redo
-          </button>
-        </div>
-        <div className="flex-1" />
-        {onCancel && (
+      {!hideToolbar && onSave && onCancel && onUndo && onRedo && (
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1">
+            <button type="button" onClick={onUndo} disabled={!canUndo} className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-foreground/70 hover:bg-muted disabled:opacity-30 transition-colors">
+              <ArrowCounterClockwise className="h-3 w-3" />
+              Undo
+            </button>
+            <button type="button" onClick={onRedo} disabled={!canRedo} className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-foreground/70 hover:bg-muted disabled:opacity-30 transition-colors">
+              <ArrowClockwise className="h-3 w-3" />
+              Redo
+            </button>
+          </div>
+          <div className="flex-1" />
           <button type="button" onClick={onCancel} className="rounded border border-border px-3 py-1 text-[11px] text-foreground/70 hover:bg-muted transition-colors">
             Cancel
           </button>
-        )}
-        <button type="button" onClick={onSave} className="flex items-center gap-1.5 rounded bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-          <Check className="h-3.5 w-3.5" weight="bold" />
-          Save
-        </button>
-      </div>
+          <button type="button" onClick={onSave} className="flex items-center gap-1.5 rounded bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+            <Check className="h-3.5 w-3.5" weight="bold" />
+            Save
+          </button>
+        </div>
+      )}
     </div>
   )
 }

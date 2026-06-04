@@ -42,9 +42,12 @@ interface PrintDialogProps {
   photoWidth: number
   photoHeight: number
   disabled?: boolean
-  /** Called when print sheet blob is generated (for the parent to track) */
   children?: React.ReactNode
 }
+
+const DEFAULT_BORDER_IN = 0.08
+const DEFAULT_MARGIN_IN = 0.25
+const DEFAULT_GAP_IN = 0.12
 
 export function PrintDialog({
   photoUrl,
@@ -56,35 +59,39 @@ export function PrintDialog({
   const [open, setOpen] = useState(false)
   const [paperSize, setPaperSize] = useState<PaperSize>(PAPER_SIZES[0])
   const [copies, setCopies] = useState(4)
-  const borderIn = 0.08 // ~2mm
-  const marginIn = 0.25 // ~6mm
-  const gapIn = 0.12 // ~3mm
   const [portrait, setPortrait] = useState(false)
   const [showCutMarks, setShowCutMarks] = useState(true)
+  const [showPhotoBorders, setShowPhotoBorders] = useState(true)
+  const [showSpacing, setShowSpacing] = useState(true)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
   const previewCanvasRef = useRef<HTMLCanvasElement>(null)
+  const previewUrlRef = useRef<string | null>(null)
+  const generateIdRef = useRef(0)
 
   const config = useMemo<PrintLayoutConfig>(() => ({
     paperSize,
     copies,
-    borderIn,
-    marginIn,
-    gapIn,
+    borderIn: DEFAULT_BORDER_IN,
+    marginIn: DEFAULT_MARGIN_IN,
+    gapIn: DEFAULT_GAP_IN,
     showCutMarks,
+    showPhotoBorders,
+    showSpacing,
     portrait,
-  }), [paperSize, copies, borderIn, marginIn, gapIn, showCutMarks, portrait])
+  }), [paperSize, copies, showCutMarks, showPhotoBorders, showSpacing, portrait])
 
   const grid = calculateGrid(config, photoWidth, photoHeight)
+  const layoutFits = grid.totalFit >= copies
 
-  // Generate preview when dialog opens or config changes
   const generatePreview = useCallback(async () => {
-    if (!photoUrl) return
+    if (!photoUrl || !open) return
+    const runId = ++generateIdRef.current
     setGenerating(true)
     try {
       const canvas = await renderPrintSheet(photoUrl, config, photoWidth, photoHeight)
+      if (runId !== generateIdRef.current) return
 
-      // Create a scaled-down preview for the dialog
       const maxPreviewW = 400
       const scale = Math.min(1, maxPreviewW / canvas.width)
       const preview = document.createElement("canvas")
@@ -95,35 +102,50 @@ export function PrintDialog({
       pctx.imageSmoothingQuality = "high"
       pctx.drawImage(canvas, 0, 0, preview.width, preview.height)
 
-      if (previewUrl) URL.revokeObjectURL(previewUrl)
       const blob = await canvasToBlob(preview)
-      setPreviewUrl(URL.createObjectURL(blob))
+      if (runId !== generateIdRef.current) return
 
-      // Store full-res canvas for download/print
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+      const url = URL.createObjectURL(blob)
+      previewUrlRef.current = url
+      setPreviewUrl(url)
+
       if (previewCanvasRef.current) {
         previewCanvasRef.current.width = canvas.width
         previewCanvasRef.current.height = canvas.height
         previewCanvasRef.current.getContext("2d")!.drawImage(canvas, 0, 0)
       }
     } catch (err) {
-      console.error(err)
-      toast.error("Failed to generate print preview")
+      if (runId === generateIdRef.current) {
+        console.error(err)
+        toast.error("Failed to generate print preview")
+      }
     } finally {
-      setGenerating(false)
+      if (runId === generateIdRef.current) setGenerating(false)
     }
-  }, [photoUrl, config, photoWidth, photoHeight, previewUrl])
+  }, [photoUrl, config, photoWidth, photoHeight, open])
 
   useEffect(() => {
-    if (open) {
-      queueMicrotask(() => generatePreview())
+    if (!open) return
+    const t = window.setTimeout(() => {
+      void generatePreview()
+    }, 120)
+    return () => window.clearTimeout(t)
+  }, [open, generatePreview])
+
+  useEffect(() => {
+    if (open) return
+    generateIdRef.current += 1
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current)
+      previewUrlRef.current = null
     }
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl)
-    }
-  }, [open, generatePreview, previewUrl])
+    setPreviewUrl(null)
+    setGenerating(false)
+  }, [open])
 
   const handleDownload = async () => {
-    if (!previewCanvasRef.current) return
+    if (!previewCanvasRef.current || !layoutFits) return
     try {
       const blob = await canvasToBlob(previewCanvasRef.current)
       const a = document.createElement("a")
@@ -138,15 +160,13 @@ export function PrintDialog({
   }
 
   const handlePrint = async () => {
-    if (!previewCanvasRef.current) return
+    if (!previewCanvasRef.current || !layoutFits) return
     try {
       const blob = await canvasToBlob(previewCanvasRef.current)
       const url = URL.createObjectURL(blob)
 
-      // Open print dialog with the image
       const printWindow = window.open("")
       if (!printWindow) {
-        // Fallback: download and tell user to print manually
         handleDownload()
         toast.info("Pop-up blocked. Downloaded instead — open and press Ctrl+P to print.")
         return
@@ -159,15 +179,15 @@ export function PrintDialog({
             <style>
               @page { margin: 0; size: ${portrait ? paperSize.heightIn : paperSize.widthIn}in ${portrait ? paperSize.widthIn : paperSize.heightIn}in; }
               body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #f0f0f0; }
-              img { max-width: 100%; max-height: 100vh; }
+              img { width: 100%; height: auto; }
               @media print {
                 body { background: white; }
-                img { max-width: 100%; max-height: 100vh; }
+                img { width: 100%; height: auto; page-break-inside: avoid; }
               }
             </style>
           </head>
           <body>
-            <img src="${url}" onload="window.print(); window.close();" />
+            <img src="${url}" onload="window.print(); setTimeout(function(){ window.close(); }, 500);" />
           </body>
         </html>
       `)
@@ -176,6 +196,8 @@ export function PrintDialog({
       toast.error("Print failed")
     }
   }
+
+  const actionsEnabled = !generating && !!previewUrl && layoutFits
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -198,7 +220,6 @@ export function PrintDialog({
         </DialogHeader>
 
         <div className="grid gap-5 py-3">
-          {/* Paper size */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Paper size</Label>
@@ -240,7 +261,6 @@ export function PrintDialog({
             </div>
           </div>
 
-          {/* Orientation toggle */}
           <div className="space-y-2">
             <Label>Orientation</Label>
             <div className="flex gap-2">
@@ -254,9 +274,6 @@ export function PrintDialog({
                     : "border-border text-muted-foreground hover:border-muted-foreground/30",
                 )}
               >
-                <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <rect x="3" y="1" width="10" height="14" rx="1" />
-                </svg>
                 Landscape
               </button>
               <button
@@ -269,49 +286,57 @@ export function PrintDialog({
                     : "border-border text-muted-foreground hover:border-muted-foreground/30",
                 )}
               >
-                <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <rect x="1" y="3" width="14" height="10" rx="1" />
-                </svg>
                 Portrait
               </button>
             </div>
           </div>
 
-          {/* Grid info */}
           <Card className="flex items-center gap-3 p-3 text-xs bg-muted/30">
             <ImageIcon className="h-5 w-5 shrink-0 text-muted-foreground" />
             <div className="space-y-0.5">
-              <p className="font-medium text-foreground">
-                {grid.totalFit >= copies
+              <p className={cn("font-medium", !layoutFits && "text-destructive")}>
+                {layoutFits
                   ? `${copies} photo${copies > 1 ? "s" : ""} fit on one sheet`
-                  : `Only ${grid.totalFit} fit — reduce copies`}
+                  : `Only ${grid.totalFit} fit — reduce copies or disable spacing`}
               </p>
               <p className="text-muted-foreground">
                 {grid.cols} × {grid.rows} grid ·{" "}
-                {portrait ? paperSize.heightIn : paperSize.widthIn}×{portrait ? paperSize.widthIn : paperSize.heightIn}&quot; at {paperSize.dpi} DPI ·{" "}
-                {grid.canvasW}×{grid.canvasH} px
+                {portrait ? paperSize.heightIn : paperSize.widthIn}×{portrait ? paperSize.widthIn : paperSize.heightIn}&quot; at {paperSize.dpi} DPI
               </p>
             </div>
           </Card>
 
-          {/* Cut marks toggle */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label className="text-sm">Cut marks & borders</Label>
-              <p className="text-[11px] text-muted-foreground">
-                Show dashed cut lines and photo borders
-              </p>
+          <div className="space-y-3 rounded-lg border p-3">
+            <Label className="text-sm">Layout options</Label>
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <span className="text-sm">Photo borders</span>
+                <p className="text-[11px] text-muted-foreground">Outline around each portrait</p>
+              </div>
+              <Switch checked={showPhotoBorders} onCheckedChange={setShowPhotoBorders} />
             </div>
-            <Switch checked={showCutMarks} onCheckedChange={setShowCutMarks} />
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <span className="text-sm">Spacing between photos</span>
+                <p className="text-[11px] text-muted-foreground">Gap so copies are easy to cut apart</p>
+              </div>
+              <Switch checked={showSpacing} onCheckedChange={setShowSpacing} />
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <span className="text-sm">Cut marks</span>
+                <p className="text-[11px] text-muted-foreground">Dashed guides and corner marks</p>
+              </div>
+              <Switch checked={showCutMarks} onCheckedChange={setShowCutMarks} />
+            </div>
           </div>
 
-          {/* Preview */}
           <div className="space-y-2">
             <Label>Preview</Label>
             <div
               className={cn(
                 "flex items-center justify-center rounded-lg border bg-white p-3 min-h-[200px]",
-                generating && "animate-pulse",
+                generating && "opacity-70",
               )}
             >
               {previewUrl ? (
@@ -324,21 +349,19 @@ export function PrintDialog({
                 <div className="flex flex-col items-center gap-2 text-muted-foreground">
                   <ImageIcon className="h-8 w-8 opacity-40" />
                   <span className="text-xs">
-                    {generating ? "Generating…" : "Preview not available"}
+                    {generating ? "Generating…" : "Open preview by adjusting options above"}
                   </span>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Hidden full-res canvas */}
-          <canvas ref={previewCanvasRef} className="hidden" />
+          <canvas ref={previewCanvasRef} className="hidden" aria-hidden />
 
-          {/* Actions */}
           <div className="flex gap-3 pt-1">
             <Button
               onClick={handleDownload}
-              disabled={generating || !previewUrl}
+              disabled={!actionsEnabled}
               variant="outline"
               className="flex-1"
             >
@@ -347,7 +370,7 @@ export function PrintDialog({
             </Button>
             <Button
               onClick={handlePrint}
-              disabled={generating || !previewUrl}
+              disabled={!actionsEnabled}
               className="flex-1"
             >
               <Printer className="mr-2 h-4 w-4" />

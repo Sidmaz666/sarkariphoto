@@ -26,8 +26,12 @@ export type PrintLayoutConfig = {
   marginIn: number
   /** Gap between photos */
   gapIn: number
-  /** Should cut marks be drawn */
+  /** Dashed cut lines at photo edges */
   showCutMarks: boolean
+  /** Solid border around each photo cell */
+  showPhotoBorders: boolean
+  /** Visible gap between photo cells */
+  showSpacing: boolean
   /** Portrait orientation (swap paper width/height) */
   portrait?: boolean
 }
@@ -57,14 +61,14 @@ export function calculateGrid(
   photoW: number,
   photoH: number,
 ): CalculatedGrid {
-  const { paperSize, copies, borderIn, marginIn, gapIn, portrait } = config
+  const { paperSize, copies, borderIn, marginIn, gapIn, portrait, showPhotoBorders, showSpacing } = config
   const dpi = paperSize.dpi
 
   const pw = (portrait ? paperSize.heightIn : paperSize.widthIn) * dpi
   const ph = (portrait ? paperSize.widthIn : paperSize.heightIn) * dpi
   const m = marginIn * dpi
-  const g = gapIn * dpi
-  const b = borderIn * dpi
+  const g = showSpacing ? gapIn * dpi : 0
+  const b = showPhotoBorders ? borderIn * dpi : 0
 
   // Photo area inside border
   const paW = photoW
@@ -158,11 +162,24 @@ export async function renderPrintSheet(
   canvas.width = grid.canvasW
   canvas.height = grid.canvasH
   const ctx = canvas.getContext("2d")!
-  const b = config.borderIn * dpi
+  const b = config.showPhotoBorders ? config.borderIn * dpi : 0
+  const gapPx = config.showSpacing ? config.gapIn * dpi : 0
 
   // Fill with white
   ctx.fillStyle = "#FFFFFF"
   ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+  // Light page margin guide
+  if (config.marginIn > 0) {
+    ctx.strokeStyle = "#EEEEEE"
+    ctx.lineWidth = 1
+    ctx.strokeRect(
+      config.marginIn * dpi,
+      config.marginIn * dpi,
+      canvas.width - config.marginIn * dpi * 2,
+      canvas.height - config.marginIn * dpi * 2,
+    )
+  }
 
   // Draw cut marks first (behind photos)
   if (config.showCutMarks) {
@@ -172,8 +189,8 @@ export async function renderPrintSheet(
 
     for (let r = 0; r < grid.rows; r++) {
       for (let c = 0; c < grid.cols; c++) {
-        const x = grid.marginXPx + c * (grid.cellW + config.gapIn * dpi) + b
-        const y = grid.marginYPx + r * (grid.cellH + config.gapIn * dpi) + b
+        const x = grid.marginXPx + c * (grid.cellW + gapPx) + b
+        const y = grid.marginYPx + r * (grid.cellH + gapPx) + b
         ctx.strokeRect(x, y, grid.photoAreaW, grid.photoAreaH)
       }
     }
@@ -188,17 +205,24 @@ export async function renderPrintSheet(
     const c = i % grid.cols
 
     // Cell top-left (includes border)
-    const cellX = grid.marginXPx + c * (grid.cellW + config.gapIn * dpi)
-    const cellY = grid.marginYPx + r * (grid.cellH + config.gapIn * dpi)
+    const cellX = grid.marginXPx + c * (grid.cellW + gapPx)
+    const cellY = grid.marginYPx + r * (grid.cellH + gapPx)
 
     // Draw white border background
     ctx.fillStyle = "#FFFFFF"
     ctx.fillRect(cellX, cellY, grid.cellW, grid.cellH)
 
-    // Draw thin border line
-    ctx.strokeStyle = "#DDDDDD"
-    ctx.lineWidth = 0.5
-    ctx.strokeRect(cellX, cellY, grid.cellW, grid.cellH)
+    // Draw thin border line around each photo cell
+    if (config.showPhotoBorders) {
+      ctx.strokeStyle = "#BBBBBB"
+      ctx.lineWidth = 1
+      ctx.strokeRect(cellX + 0.5, cellY + 0.5, grid.cellW - 1, grid.cellH - 1)
+      if (b > 0) {
+        ctx.strokeStyle = "#DDDDDD"
+        ctx.lineWidth = 0.5
+        ctx.strokeRect(cellX + b, cellY + b, grid.photoAreaW, grid.photoAreaH)
+      }
+    }
 
     // Draw photo inside the border
     const photoX = cellX + b
@@ -219,8 +243,8 @@ export async function renderPrintSheet(
     // Corner marks at each photo
     for (let r = 0; r < grid.rows; r++) {
       for (let c = 0; c < grid.cols; c++) {
-        const x = grid.marginXPx + c * (grid.cellW + config.gapIn * dpi) - 1
-        const y = grid.marginYPx + r * (grid.cellH + config.gapIn * dpi) - 1
+        const x = grid.marginXPx + c * (grid.cellW + gapPx) - 1
+        const y = grid.marginYPx + r * (grid.cellH + gapPx) - 1
         const cx = x + grid.cellW + 2
         const cy = y + grid.cellH + 2
 
