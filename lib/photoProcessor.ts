@@ -538,8 +538,117 @@ async function fitToFileSize(
   return chosen;
 }
 
+export type PortraitCropRect = {
+  cropX: number;
+  cropY: number;
+  cropW: number;
+  cropH: number;
+};
+
+/** Compute portrait crop window on the cutout (same math as final compose). */
+export function computePortraitCropRect(
+  cutoutCanvas: HTMLCanvasElement,
+  opts: Pick<ProcessOptions, "widthPx" | "heightPx" | "headHeightPct" | "eyeLinePct">,
+  adjustments: Pick<AdjustmentOptions, "offsetX" | "offsetY" | "scale">,
+): PortraitCropRect {
+  const headHeightPct = opts.headHeightPct ?? 0.7;
+  const eyeLinePct = opts.eyeLinePct ?? 0.4;
+  const targetAspect = opts.widthPx / opts.heightPx;
+
+  const bounds = findSubjectBounds(cutoutCanvas);
+  const geom = estimateHeadGeometry(cutoutCanvas, bounds);
+
+  let cropH = geom.headHeight / headHeightPct;
+  let cropW = cropH * targetAspect;
+
+  const scale = adjustments.scale;
+  cropW /= scale;
+  cropH /= scale;
+
+  let cropY = geom.eyeY - cropH * eyeLinePct;
+  let cropX = geom.faceCenterX - cropW / 2;
+
+  cropX -= adjustments.offsetX;
+  cropY -= adjustments.offsetY;
+
+  return { cropX, cropY, cropW, cropH };
+}
+
+/** Apply manual source crop region to a background-removed cutout. */
+export function applySourceCropToCanvas(
+  cutoutCanvas: HTMLCanvasElement,
+  sourceCrop?: CropRegion,
+): HTMLCanvasElement {
+  if (!sourceCrop) return cutoutCanvas;
+  const isFull =
+    sourceCrop.x === 0 &&
+    sourceCrop.y === 0 &&
+    sourceCrop.width === 1 &&
+    sourceCrop.height === 1;
+  if (isFull) return cutoutCanvas;
+
+  const { x, y, width, height } = sourceCrop;
+  const cropW = Math.round(cutoutCanvas.width * width);
+  const cropH = Math.round(cutoutCanvas.height * height);
+  const cropX = Math.round(cutoutCanvas.width * x);
+  const cropY = Math.round(cutoutCanvas.height * y);
+  const cropCanvas = document.createElement("canvas");
+  cropCanvas.width = cropW;
+  cropCanvas.height = cropH;
+  cropCanvas.getContext("2d")!.drawImage(
+    cutoutCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH,
+  );
+  return cropCanvas;
+}
+
+/** Renders the exact portrait output pixels (same pipeline as Save / reprocess). */
+export function renderPortraitOutputFrame(
+  cutoutCanvas: HTMLCanvasElement,
+  opts: Pick<ProcessOptions, "widthPx" | "heightPx" | "bgColor" | "headHeightPct" | "eyeLinePct">,
+  adjustments: AdjustmentOptions,
+): HTMLCanvasElement {
+  const { cropX, cropY, cropW, cropH } = computePortraitCropRect(cutoutCanvas, opts, adjustments);
+
+  const composed = document.createElement("canvas");
+  composed.width = cutoutCanvas.width;
+  composed.height = cutoutCanvas.height;
+  const cctx = composed.getContext("2d")!;
+  cctx.fillStyle = opts.bgColor;
+  cctx.fillRect(0, 0, composed.width, composed.height);
+  cctx.drawImage(cutoutCanvas, 0, 0);
+
+  const { canvas: srcCanvas, cropX: cx, cropY: cy } = ensureCropFits(
+    composed, cropX, cropY, cropW, cropH, opts.bgColor,
+  );
+
+  const upscale = Math.max(1, adjustments.upscaleFactor || 1);
+  const workCanvas = document.createElement("canvas");
+  workCanvas.width = opts.widthPx * upscale;
+  workCanvas.height = opts.heightPx * upscale;
+  const wctx = workCanvas.getContext("2d")!;
+  wctx.imageSmoothingEnabled = true;
+  wctx.imageSmoothingQuality = "high";
+  wctx.fillStyle = opts.bgColor;
+  wctx.fillRect(0, 0, workCanvas.width, workCanvas.height);
+  wctx.drawImage(srcCanvas, cx, cy, cropW, cropH, 0, 0, workCanvas.width, workCanvas.height);
+  applyAdjustments(wctx, workCanvas.width, workCanvas.height, adjustments);
+
+  if (upscale > 1) {
+    const finalCanvas = document.createElement("canvas");
+    finalCanvas.width = opts.widthPx;
+    finalCanvas.height = opts.heightPx;
+    const fctx = finalCanvas.getContext("2d")!;
+    fctx.imageSmoothingEnabled = true;
+    fctx.imageSmoothingQuality = "high";
+    fctx.drawImage(workCanvas, 0, 0, opts.widthPx, opts.heightPx);
+    return finalCanvas;
+  }
+
+  return workCanvas;
+}
+
 /** If crop extends beyond source canvas, pad with bgColor so it fills frame */
-function ensureCropFits(
+export function ensureCropFits(
   source: HTMLCanvasElement,
   cropX: number, cropY: number, cropW: number, cropH: number,
   bgColor: string,
@@ -568,73 +677,11 @@ async function composeAndCrop(
   adjustments: AdjustmentOptions,
   notes: string[],
 ): Promise<HTMLCanvasElement> {
-  const headHeightPct = opts.headHeightPct ?? 0.7;
-  const eyeLinePct = opts.eyeLinePct ?? 0.4;
-  const targetAspect = opts.widthPx / opts.heightPx;
-
-  const bounds = findSubjectBounds(cutoutCanvas);
-  const geom = estimateHeadGeometry(cutoutCanvas, bounds);
-
-  let cropH = geom.headHeight / headHeightPct;
-  let cropW = cropH * targetAspect;
-
-  const scale = adjustments.scale;
-  cropW /= scale;
-  cropH /= scale;
-
-  let cropY = geom.eyeY - cropH * eyeLinePct;
-  let cropX = geom.faceCenterX - cropW / 2;
-
-  cropX -= adjustments.offsetX;
-  cropY -= adjustments.offsetY;
-
-  // Compose cutout onto bg-colored canvas
-  const composed = document.createElement("canvas");
-  composed.width = cutoutCanvas.width;
-  composed.height = cutoutCanvas.height;
-  const cctx = composed.getContext("2d")!;
-  cctx.fillStyle = opts.bgColor;
-  cctx.fillRect(0, 0, composed.width, composed.height);
-  cctx.drawImage(cutoutCanvas, 0, 0);
-
-  // Ensure crop fits within canvas (pad if needed)
-  const { canvas: srcCanvas, cropX: cx, cropY: cy } = ensureCropFits(
-    composed, cropX, cropY, cropW, cropH, opts.bgColor,
-  );
-
-  // Upscale factor
   const upscale = adjustments.upscaleFactor;
-
-  // Render cropped region onto upscaled working canvas
-  const workCanvas = document.createElement("canvas");
-  workCanvas.width = opts.widthPx * upscale;
-  workCanvas.height = opts.heightPx * upscale;
-  const wctx = workCanvas.getContext("2d")!;
-  wctx.imageSmoothingEnabled = true;
-  wctx.imageSmoothingQuality = "high";
-  wctx.fillStyle = opts.bgColor;
-  wctx.fillRect(0, 0, workCanvas.width, workCanvas.height);
-
-  // Draw cropped region to fill the entire upscaled canvas (no margins)
-  wctx.drawImage(srcCanvas, cx, cy, cropW, cropH, 0, 0, workCanvas.width, workCanvas.height);
-
-  // Apply image adjustments (color + sharpen) at the upscaled resolution
-  applyAdjustments(wctx, workCanvas.width, workCanvas.height, adjustments);
-
-  // Downscale to target dimensions if upscaled
   if (upscale > 1) {
-    const finalCanvas = document.createElement("canvas");
-    finalCanvas.width = opts.widthPx;
-    finalCanvas.height = opts.heightPx;
-    const fctx = finalCanvas.getContext("2d")!;
-    fctx.imageSmoothingEnabled = true;
-    fctx.imageSmoothingQuality = "high";
-    fctx.drawImage(workCanvas, 0, 0, opts.widthPx, opts.heightPx);
     notes.push(`Upscaled ${upscale}x for higher quality, then downscaled to target.`);
-    return finalCanvas;
   }
-
-  return workCanvas;
+  return renderPortraitOutputFrame(cutoutCanvas, opts, adjustments);
 }
 
 export async function processPhoto(
@@ -720,22 +767,7 @@ export async function processPhoto(
     cutoutCanvas.height = cutoutImg.naturalHeight;
     cutoutCanvas.getContext("2d")!.drawImage(cutoutImg, 0, 0);
 
-    // Apply source crop if specified
-    let processCanvas = cutoutCanvas;
-    if (opts.sourceCrop) {
-      const { x, y, width, height } = opts.sourceCrop;
-      const cropW = Math.round(cutoutCanvas.width * width)
-      const cropH = Math.round(cutoutCanvas.height * height)
-      const cropX = Math.round(cutoutCanvas.width * x)
-      const cropY = Math.round(cutoutCanvas.height * y)
-      const cropCanvas = document.createElement("canvas");
-      cropCanvas.width = cropW;
-      cropCanvas.height = cropH;
-      cropCanvas.getContext("2d")!.drawImage(
-        cutoutCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH,
-      );
-      processCanvas = cropCanvas;
-    }
+    const processCanvas = applySourceCropToCanvas(cutoutCanvas, opts.sourceCrop);
 
     onProgress?.("Detecting face & framing portrait…");
     onStep?.("detect", "running");
@@ -824,11 +856,12 @@ export async function reprocessPhoto(
     cutoutCanvas.width = cutoutImg.naturalWidth;
     cutoutCanvas.height = cutoutImg.naturalHeight;
     cutoutCanvas.getContext("2d")!.drawImage(cutoutImg, 0, 0);
+    const processCanvas = applySourceCropToCanvas(cutoutCanvas, opts.sourceCrop);
     onStep?.("detect", "done");
 
     onProgress?.("Composing final image…");
     onStep?.("compose", "running");
-    finalCanvas = await composeAndCrop(cutoutCanvas, opts, adjustments, notes);
+    finalCanvas = await composeAndCrop(processCanvas, opts, adjustments, notes);
     onStep?.("compose", "done");
   }
 

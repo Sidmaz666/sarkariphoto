@@ -61,7 +61,7 @@ interface RepositionState {
 import { cn } from "@/lib/utils"
 import { BeforeAfter } from "@/components/BeforeAfter"
 import { PipelineProgress } from "@/components/PipelineProgress"
-import { CropOverlay } from "@/components/CropOverlay"
+import { PortraitRepositionEditor } from "@/components/PortraitRepositionEditor"
 import { SourceCrop } from "@/components/SourceCrop"
 import { CompositionGuide } from "@/components/CompositionGuide"
 import { PrintDialog } from "@/components/PrintDialog"
@@ -502,9 +502,9 @@ export default function PhotoStudio() {
     }
   }, [file, previewURL, width, height, minKB, maxKB, format, bgColor, headPct, eyePct, adjustments, cutoutDataURL, result, sourceCrop, presetId])
 
-  const saveRepos = useCallback(() => {
+  const saveRepos = useCallback(async () => {
     setShowReposition(false)
-    handleReprocess()
+    await handleReprocess()
   }, [handleReprocess])
 
   const reset = () => {
@@ -538,7 +538,8 @@ export default function PhotoStudio() {
   const isSignature = currentPreset?.signature ?? false
   const pipelineActive = pipelineSteps.some((s) => s.status === "running")
   const cropEditorActive = showManualCrop && !!previewURL && !pipelineActive
-  const reposEditorActive = showReposition && !!result && !!previewURL && !pipelineActive
+  const reposEditorActive =
+    showReposition && !!result && !!previewURL && !pipelineActive && !!cutoutDataURL && !isSignature
 
   const cropToolbar = cropEditorActive ? (
     <EditToolbar
@@ -609,17 +610,29 @@ export default function PhotoStudio() {
           <div className="space-y-4">
             {/* ── Manual crop (source image) ── */}
             {cropEditorActive && (
-              <>
+              <Card className="overflow-hidden p-0">
+                <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-2">
+                  <div className="flex items-center gap-2">
+                    <Crop className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Manual crop
+                    </span>
+                  </div>
+                </div>
                 <SourceCrop
                   imageUrl={previewURL!}
                   aspectRatio={width / height}
                   crop={sourceCrop}
                   onChange={setSourceCrop}
                   onCropEnd={handleCropEnd}
-                  className="max-h-[420px] w-full"
+                  className="max-h-[420px] w-full rounded-none border-0 border-b"
                 />
-                {cropToolbar}
-              </>
+                {cropToolbar && (
+                  <div className="border-t bg-muted/20 px-4 py-3">
+                    {cropToolbar}
+                  </div>
+                )}
+              </Card>
             )}
 
             {/* ── Preview before / without active crop ── */}
@@ -674,23 +687,44 @@ export default function PhotoStudio() {
             )}
 
             {/* ── Reposition (after generation) ── */}
-            {reposEditorActive && result && (
-              <>
-                <CropOverlay
-                  imageUrl={result.url}
+            {reposEditorActive && cutoutDataURL && (
+              <Card className="overflow-hidden p-0">
+                <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-2">
+                  <div className="flex items-center gap-2">
+                    <MagnifyingGlass className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Reposition subject
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">
+                    {width}×{height} output frame
+                  </span>
+                </div>
+                <PortraitRepositionEditor
+                  cutoutUrl={cutoutDataURL}
                   bgColor={bgColor}
-                  aspectRatio={width / height}
-                  offsetX={adjustments.offsetX}
-                  offsetY={adjustments.offsetY}
-                  scale={adjustments.scale}
-                  className="max-h-[480px] w-full"
+                  widthPx={width}
+                  heightPx={height}
+                  headHeightPct={headPct / 100}
+                  eyeLinePct={eyePct / 100}
+                  sourceCrop={sourceCrop}
+                  adjustments={adjustments}
+                  imageClassName="max-h-[480px]"
                   onOffsetChange={handleReposOffsetChange}
                   onScaleChange={handleReposScaleChange}
                   onInteractionEnd={snapshotReposHistory}
-                  hideToolbar
                 />
-                {reposToolbar}
-              </>
+                {reposToolbar && (
+                  <div className="border-t bg-muted/20 px-4 py-3">
+                    {reposToolbar}
+                  </div>
+                )}
+              </Card>
+            )}
+            {showReposition && result && !cutoutDataURL && !pipelineActive && !isSignature && (
+              <Card className="border-amber-400/40 bg-amber-50/50 dark:bg-amber-950/20 p-4 text-xs text-muted-foreground">
+                Re-generate this portrait once to unlock repositioning with the full cutout preview.
+              </Card>
             )}
 
             {/* ── After generation (compare view) ── */}
@@ -996,16 +1030,9 @@ export default function PhotoStudio() {
             />
           </div>
           {showManualCrop && (
-            <>
-              <p className="text-[10px] text-muted-foreground pl-5">
-                Drag the rectangle to select the area to process
-              </p>
-              {cropToolbar && (
-                <div className="rounded-lg border bg-muted/20 p-3">
-                  {cropToolbar}
-                </div>
-              )}
-            </>
+            <p className="text-[10px] text-muted-foreground pl-5">
+              Drag the rectangle above · use Undo/Redo/Save below the preview
+            </p>
           )}
           {!isSignature && (
             <div className="flex items-center justify-between">
@@ -1043,16 +1070,9 @@ export default function PhotoStudio() {
                 />
               </div>
               {showReposition && (
-                <>
-                  <p className="text-[10px] text-muted-foreground pl-5">
-                    Drag image to reposition · use zoom controls to resize
-                  </p>
-                  {reposToolbar && (
-                    <div className="rounded-lg border bg-muted/20 p-3">
-                      {reposToolbar}
-                    </div>
-                  )}
-                </>
+                <p className="text-[10px] text-muted-foreground pl-5">
+                  Drag the full photo inside the frame · Save applies the new crop
+                </p>
               )}
             </>
           )}

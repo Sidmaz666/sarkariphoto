@@ -12,6 +12,8 @@ interface CropOverlayProps {
   offsetX: number
   offsetY: number
   scale: number
+  /** Classes for the image viewport only (e.g. max-height) */
+  imageClassName?: string
   className?: string
   onOffsetChange: (x: number, y: number) => void
   onScaleChange: (s: number) => void
@@ -34,6 +36,7 @@ export function CropOverlay({
   offsetX,
   offsetY,
   scale,
+  imageClassName,
   className,
   onOffsetChange,
   onScaleChange,
@@ -102,10 +105,13 @@ export function CropOverlay({
   }
 
   return (
-    <div className={cn("space-y-3", className)}>
+    <div className={cn(className)}>
       <div
         ref={containerRef}
-        className="relative overflow-hidden rounded-lg border select-none"
+        className={cn(
+          "relative overflow-hidden select-none w-full",
+          imageClassName,
+        )}
         style={{
           backgroundColor: bgColor,
           aspectRatio: `${aspectRatio}`,
