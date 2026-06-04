@@ -142,6 +142,7 @@ const loadImage = (src: string): Promise<HTMLImageElement> =>
     img.src = src
   })
 
+  
 /** Generate a print sheet canvas */
 export async function renderPrintSheet(
   photoUrl: string,
